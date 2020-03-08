@@ -3,8 +3,11 @@ import utime
 from umqtt.simple import MQTTClient
 
 timer = machine.Timer(-1)
+timer_end = 0
 
 def callback(topic, msg):
+    if not msg:
+        return
     if topic == b'webrepl':
         if msg == b'ON':
             print('REPL ON')
@@ -13,18 +16,20 @@ def callback(topic, msg):
             print('REPL OFF')
             web_repl(stop=True)
     elif topic.startswith(cfg['TOPIC'].encode('utf')):
-        sub_topics = topic.split(b'/')[2:]
-        if not sub_topics:
+        sub_topic = topic[len(cfg['TOPIC']):].strip(b'/')
+        if not sub_topic:
             if msg == b'ON':
                 POWER_ON()
             elif msg == b'OFF':
                 POWER_OFF()
         else:
-            if sub_topics[0] == b'timer':
-                period = int(msg) * 1000 * 60 * 60
+            if sub_topic == b'timer/set':
+                period = int(msg) * 3600
+                global timer_end
+                timer_end = utime.time() + period
                 if period > 0:
                     POWER_ON(publish=True)
-                    timer.init(period=period,
+                    timer.init(period=period * 1000,
                                mode=timer.ONE_SHOT,
                                callback=lambda t: POWER_OFF(publish=True))
                 else:
@@ -57,6 +62,14 @@ def publish_state():
         msg = b'OFF'
     client.publish(cfg['TOPIC'], msg, retain=True)
 
+def publish_timer():
+    remaining = timer_end - utime.time()
+    if remaining > 0:
+        msg = '{:.2f}'.format(remaining/3600)
+    else:
+        msg = '0'
+    client.publish(cfg['TOPIC']+'/timer', msg, retain=True)
+
 def main():
     connect()
     last_ping = utime.time()
@@ -72,7 +85,8 @@ def main():
                 print("noop")
                 if utime.time() - last_ping > 30:
                     print("ping")
-                    client.ping()
+                    publish_timer()
+                    #client.ping()
                     last_ping = utime.time()
             else:
                 print(e)
@@ -85,4 +99,10 @@ except KeyboardInterrupt:
     pass
 except Exception as e:
     print(e)
+    with open('exception.log', 'a') as elog:
+        ttup = utime.localtime()
+        datestr = '{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d} '.format(*ttup[:6])
+        elog.write(datestr)
+        elog.write(str(e))
+        elog.write('\n')
     #fail_mode()

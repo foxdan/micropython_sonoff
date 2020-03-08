@@ -10,6 +10,7 @@ LED = machine.PWM(machine.Pin(13, machine.Pin.OUT), duty=500, freq=2)
 RELAY = machine.Signal(12, machine.Pin.OUT)
 BUTTON = machine.Pin(0, machine.Pin.IN)
 TOGGLED = bytearray((False,))
+machine.freq(160000000)
 
 try:
     with open('cfg.json', 'r') as jcfg:
@@ -87,11 +88,20 @@ def nw_config():
     timeout = utime.time() + 30
     while True:
         if wlan.isconnected():
+            import ntptime
+            ntptime.host = 'ie.pool.ntp.org'
+            for i in range(4):
+                utime.sleep(i << 1)
+                try:
+                    ntptime.settime()
+                except Exception:
+                    pass
+                else:
+                    break
             LED.freq(500)
             return True
-        if utime.time() > timeout:
+        elif utime.time() > timeout:
             return False
-        utime.sleep(1)
 
 BUTTON.irq(handler=button_hdlr, trigger=(BUTTON.IRQ_FALLING), hard=True)
 try:
