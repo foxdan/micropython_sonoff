@@ -1,0 +1,11 @@
+{
+  "LOCATION": "home",
+  "ROOM": "hall",
+  "TYPE": "light",
+  "NAME": "lamp",
+  "MQTT_HOST": "192.168.1.1",
+  "PASSWORD": "WiFi_Password",
+  "SSID": "WiFi_SSID",
+  "CLIENT_ID_PREFIX": "myprefix-",
+  "DEBUG_PASS": "password"
+}
