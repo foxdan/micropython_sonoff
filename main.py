@@ -39,6 +39,8 @@ def callback(topic, msg):
                        callback=lambda t: POWER_OFF())
         else:
             timer.deinit()
+            # Resubscribe to `<topic>/set` to reset to desired state
+            client.subscribe(topic[:-6], qos=1)
 
 client = MQTTClient(cfg['CLIENT_ID_PREFIX'] + hostname(),
                     cfg['MQTT_HOST'], keepalive=60)
