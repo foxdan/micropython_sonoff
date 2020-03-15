@@ -94,8 +94,8 @@ def nw_config():
         if wlan.isconnected():
             import ntptime
             ntptime.host = cfg.get('NTP_SERVER') or ntptime.host
-            for i in range(4):
-                utime.sleep(i << 1)
+            for i in range(5):
+                utime.sleep((ord(uos.urandom(1)) / 256) * (1 << i))
                 try:
                     ntptime.settime()
                 except Exception:
