@@ -73,7 +73,6 @@ def fail_mode():
     if ap.active():
         return
     LED.freq(3)
-    network.WLAN(network.STA_IF).active(False)
     ap.active(True)
     ap.config(essid=hostname(),
               password='homebrewiot',

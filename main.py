@@ -122,4 +122,4 @@ except Exception as e:
         elog.write(datestr)
         elog.write(str(e))
         elog.write('\n')
-    #fail_mode()
+    fail_mode()
