@@ -7,5 +7,6 @@
   "PASSWORD": "WiFi_Password",
   "SSID": "WiFi_SSID",
   "CLIENT_ID_PREFIX": "myprefix-",
-  "DEBUG_PASS": "password"
+  "DEBUG_PASS": "password",
+  "NTP_SERVER": "ie.pool.ntp.org"
 }

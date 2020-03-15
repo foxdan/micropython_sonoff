@@ -93,7 +93,7 @@ def nw_config():
     while True:
         if wlan.isconnected():
             import ntptime
-            ntptime.host = 'ie.pool.ntp.org'
+            ntptime.host = cfg.get('NTP_SERVER') or ntptime.host
             for i in range(4):
                 utime.sleep(i << 1)
                 try:
