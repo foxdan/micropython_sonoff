@@ -1,6 +1,6 @@
 import errno
 import utime
-from umqtt.simple import MQTTClient
+import mqtt
 
 timer = machine.Timer(-1)
 timer_end = 0
@@ -12,23 +12,28 @@ def topics(location, room, typ, name):
         topics.append('/'.join(args[:i]) + '/global')
     return topics
 
-def callback(topic, msg):
+def callback(client, userdata, message):
+    topic = message.topic
+    msg = message.payload
     if not msg:
         return
-    _, command = topic.rsplit(b'/', 1)
-    if command == b'webrepl':
-        if msg == b'ON':
+    _, command = topic.rsplit('/', 1)
+    if command == 'webrepl':
+        if msg == 'ON':
             print('REPL ON')
             web_repl()
-        if msg == b'OFF':
+        if msg == 'OFF':
             print('REPL OFF')
             web_repl(stop=True)
-    elif command == b'set':
-        if msg == b'ON':
+    elif command == 'set':
+        if msg == 'ON':
             POWER_ON()
-        elif msg == b'OFF':
+        elif msg == 'OFF':
             POWER_OFF()
-    elif command == b'set_timer':
+            timer.deinit()
+            global timer_end
+            timer_end = 0
+    elif command == 'set_timer':
         period = int(msg) * 3600
         global timer_end
         timer_end = utime.time() + period
@@ -36,45 +41,28 @@ def callback(topic, msg):
             POWER_ON()
             timer.init(period=period * 1000,
                        mode=timer.ONE_SHOT,
-                       callback=lambda t: POWER_OFF())
+                       callback=lambda t: POWER_OFF(publish=True))
         else:
             timer.deinit()
             # Resubscribe to `<topic>/set` to reset to desired state
             client.subscribe(topic[:-6], qos=1)
 
-client = MQTTClient(cfg['CLIENT_ID_PREFIX'] + hostname(),
-                    cfg['MQTT_HOST'], keepalive=60)
-client.cb = callback
-
-def connect(clean=False):
-    if client.sock:
-        client.sock.close()
-    while True:
-        try:
-            session_resume = client.connect(clean)
-        except Exception as e:
-            web_repl()
-            print(e)
-            utime.sleep(10)
-        else:
-            return session_resume
-
-def subscribe(root_topics):
+def subscribe(client, root_topics):
     for topic in root_topics:
         client.subscribe(topic+'/set', qos=1)
         client.subscribe(topic+'/set_timer', qos=1)
         client.subscribe(topic+'/webrepl', qos=1)
 
-def publish_state(root_topic, toggle=False):
+def publish_state(client, root_topic, toggle=False):
     if RELAY.value():
-        msg = b'ON'
+        msg = 'ON'
     else:
-        msg = b'OFF'
+        msg = 'OFF'
     client.publish(root_topic, msg, retain=True)
     if toggle:
         client.publish(root_topic+'/set', msg, retain=True)
 
-def publish_timer(root_topic):
+def publish_timer(client, root_topic):
     topic = root_topic + '/timer'
     remaining = timer_end - utime.time()
     if remaining > 0:
@@ -84,33 +72,27 @@ def publish_timer(root_topic):
     client.publish(topic, msg, retain=True)
 
 def main():
-    mytopics = topics(cfg['LOCATION'],
-                      cfg['ROOM'],
-                      cfg['TYPE'],
-                      cfg['NAME'])
+    client = mqtt.Client(cfg['CLIENT_ID_PREFIX'] + hostname())
+    client.connect(cfg['MQTT_HOST'], keepalive=60)
+    client.clean_session = False
+    client.on_message = callback
+    mytopics = topics(cfg['LOCATION'], cfg['ROOM'], cfg['TYPE'], cfg['NAME'])
     root_topic = mytopics[0]
-    connect(clean=True)
-    subscribe(mytopics)
-    last_ping = utime.time()
     while True:
-        try:
-            client.sock.settimeout(5)
-            client.wait_msg()
-        except OSError as e:
-            if e.args[0] == errno.ETIMEDOUT:
-                print("noop")
-                if utime.time() - last_ping > 30:
-                    print("ping")
-                    publish_state(root_topic, toggle=TOGGLED[0])
-                    TOGGLED[0] = False
-                    publish_timer(root_topic)
-                    #client.ping()
-                    last_ping = utime.time()
-            else:
-                print(e)
-                print("reconnect")
-                if not connect(clean=False):
-                    subscribe(mytopics)
+        if not client.reconnect():
+            subscribe(client, mytopics)
+        while client.connected:
+            try:
+                ping = client.loop_read()
+                if not ping:
+                    client.ping()
+                publish_state(client, root_topic, toggle=TOGGLED[0])
+                TOGGLED[0] = False
+                publish_timer(client, root_topic)
+            except Exception:
+                raise
+        utime.sleep(10)
+        web_repl()
 
 try:
     main()
