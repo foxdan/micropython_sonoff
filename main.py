@@ -1,9 +1,5 @@
-import errno
 import utime
 import mqtt
-
-timer = machine.Timer(-1)
-timer_end = 0
 
 def topics(location, room, typ, name):
     args = (location, room, typ, name)
@@ -12,98 +8,128 @@ def topics(location, room, typ, name):
         topics.append('/'.join(args[:i]) + '/global')
     return topics
 
+def timer_power_off(userdata):
+    userdata['timer'].deinit()
+    userdata['timer_end'] = 0
+    POWER_OFF()
+
 def callback(client, userdata, message):
-    topic = message.topic
-    msg = message.payload
-    if not msg:
+    print(message)
+    topic, command = message.topic.rsplit('/', 1)
+    timer = userdata['timer']
+    if not message.payload:
         return
-    _, command = topic.rsplit('/', 1)
     if command == 'webrepl':
-        if msg == 'ON':
+        if message.payload == 'ON':
             print('REPL ON')
             web_repl()
-        if msg == 'OFF':
+        elif message.payload == 'OFF':
             print('REPL OFF')
             web_repl(stop=True)
     elif command == 'set':
-        if msg == 'ON':
+        if message.payload == 'ON':
             POWER_ON()
-        elif msg == 'OFF':
+        elif message.payload == 'OFF':
             POWER_OFF()
-            timer.deinit()
-            global timer_end
-            timer_end = 0
+        timer.deinit()
+        userdata['timer_end'] = 0
     elif command == 'set_timer':
-        period = int(msg) * 3600
-        global timer_end
-        timer_end = utime.time() + period
+        period = int(float(message.payload) * 3600)
         if period > 0:
             POWER_ON()
+            userdata['timer_start'] = utime.time()
+            userdata['timer_end'] = utime.time() + period
             timer.init(period=period * 1000,
                        mode=timer.ONE_SHOT,
-                       callback=lambda t: POWER_OFF(publish=True))
+                       callback=lambda t: timer_power_off(userdata))
         else:
             timer.deinit()
-            # Resubscribe to `<topic>/set` to reset to desired state
-            client.subscribe(topic[:-6], qos=1)
+            userdata['timer_end'] = 0
+    elif command == 'suggest':
+        print('AUTOMATION')
+        if utime.time() - userdata['timer_start'] < 5:
+            return
+        if userdata['timer_end'] == 0:
+            if message.payload == 'ON':
+                POWER_ON()
+                timer.init(period=30 * 60 * 1000,
+                           mode=timer.ONE_SHOT,
+                           callback=lambda t: POWER_OFF())
+            elif message.payload == 'OFF':
+                POWER_OFF()
 
 def subscribe(client, root_topics):
     for topic in root_topics:
-        client.subscribe(topic+'/set', qos=1)
-        client.subscribe(topic+'/set_timer', qos=1)
         client.subscribe(topic+'/webrepl', qos=1)
+        for sub_topic in ('/set', '/set_timer', '/suggest'):
+            client.publish(topic+sub_topic, retain=True)
+            client.subscribe(topic+sub_topic, qos=1)
 
-def publish_state(client, root_topic, toggle=False):
+def publish_state(client, root_topic):
+    telegraf_line = ('{TYPE},location={LOCATION},room={ROOM},name={NAME} '
+                     'on=').format(**cfg)
     if RELAY.value():
         msg = 'ON'
+        client.publish('telegraf', telegraf_line + '1')
+        print('PUBLISH ON')
     else:
         msg = 'OFF'
+        client.publish('telegraf', telegraf_line + '0')
+        print('PUBLISH OFF')
     client.publish(root_topic, msg, retain=True)
-    if toggle:
-        client.publish(root_topic+'/set', msg, retain=True)
 
 def publish_timer(client, root_topic):
     topic = root_topic + '/timer'
-    remaining = timer_end - utime.time()
+    remaining = client.userdata['timer_end'] - utime.time()
     if remaining > 0:
         msg = '{:.2f}'.format(remaining/3600)
     else:
+        client.userdata['timer_end'] = 0
         msg = '0'
     client.publish(topic, msg, retain=True)
 
-def main():
-    client = mqtt.Client(cfg['CLIENT_ID_PREFIX'] + hostname())
-    client.connect(cfg['MQTT_HOST'], keepalive=60)
-    client.clean_session = False
-    client.on_message = callback
+def run(client):
     mytopics = topics(cfg['LOCATION'], cfg['ROOM'], cfg['TYPE'], cfg['NAME'])
+    if not client.reconnect():
+        subscribe(client, mytopics)
     root_topic = mytopics[0]
-    while True:
-        if not client.reconnect():
-            subscribe(client, mytopics)
-        while client.connected:
-            try:
-                ping = client.loop_read()
-                if not ping:
-                    client.ping()
-                publish_state(client, root_topic, toggle=TOGGLED[0])
-                TOGGLED[0] = False
-                publish_timer(client, root_topic)
-            except Exception:
-                raise
-        utime.sleep(10)
-        web_repl()
+    while client.connected:
+        if not client.loop_read():
+            client.ping()
+            publish_state(client, root_topic)
+            publish_timer(client, root_topic)
+        fail_mode(False)
 
-try:
-    main()
-except KeyboardInterrupt:
-    pass
-except Exception as e:
-    print(e)
-    with open('exception.log', 'a') as elog:
-        ttup = utime.localtime()
-        datestr = '{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d} '.format(*ttup[:6])
-        elog.write(datestr)
-        elog.write(str(e))
-        elog.write('\n')
-    fail_mode()
+def main():
+    POWER_OFF()
+    userdata = {
+        'timer': machine.Timer(-1),
+        'timer_end': 0,
+        'timer_start': utime.time(),
+    }
+    client = mqtt.Client(cfg['CLIENT_ID_PREFIX'] + hostname(),
+                         clean_session=True,
+                         userdata=userdata)
+    client.host = cfg['MQTT_HOST']
+    client.port = 1883
+    client.keepalive = 60
+    client.on_message = callback
+    exception_count = 0
+    while True:
+        try:
+            run(client)
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            exception_count += 1
+            print(e)
+            if exception_count >= 3:
+                print('Enabling fail because exceptions')
+                fail_mode()
+            if exception_count % 10 == 0:
+                nw_config()
+            utime.sleep(5)
+        else:
+            exception_count = 0
+
+main()
